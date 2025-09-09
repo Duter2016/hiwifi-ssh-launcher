@@ -22,58 +22,74 @@ jobs:
           go-version: '1.21'
           cache: true
 
-      # ---------- 2. 构建二进制 ----------
+      # ---------- 2. 准备Go模块 ----------
+      - name: Initialize Go Modules
+        run: |
+          # 如果不存在go.mod则创建
+          if [ ! -f go.mod ]; then
+            go mod init github.com/Duter2016/hiwifi-ssh-launcher
+          fi
+          
+          # 生成/更新go.sum
+          go mod tidy
+
+      # ---------- 3. 构建二进制 ----------
       - name: Build Binary
         run: |
           GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -ldflags="-s -w" -o hiwifi-ssh-launcher .
           strip hiwifi-ssh-launcher
 
-      # ---------- 3. 准备纯净构建环境 ----------
+      # ---------- 4. 准备纯净构建环境 ----------
       - name: Prepare Clean Build Directory
         run: |
-          # 创建干净的构建目录
+          # 创建干净的构建目录（忽略不存在的文件）
           mkdir -p clean-build
-          cp -r main.go go.mod go.sum LICENSE README.md hiwifi-ssh-launcher clean-build/
+          cp main.go go.mod clean-build/  # 必需文件
+          [ -f go.sum ] && cp go.sum clean-build/ || echo "go.sum不存在，跳过复制"
+          [ -f LICENSE ] && cp LICENSE clean-build/ || echo "LICENSE不存在，跳过复制"
+          [ -f README.md ] && cp README.md clean-build/ || echo "README.md不存在，跳过复制"
+          cp hiwifi-ssh-launcher clean-build/
+          
           cd clean-build
           
           # 准备版本号
           VERSION=${GITHUB_REF#refs/tags/v}
           [ -z "$VERSION" ] || [ "$VERSION" = "$GITHUB_REF" ] && VERSION="0.0.1"
           
-          # 创建PKGBUILD和源包
-          cat << 'EOF' > PKGBUILD
-          pkgname=hiwifi-ssh-launcher
-          pkgver=VERSION_PLACEHOLDER
-          pkgrel=1
-          pkgdesc="SSH Launcher for HiWiFi"
-          arch=('x86_64')
-          license=('MIT')
-          source=("${pkgname}-${pkgver}.tar.gz")
-          sha256sums=('SKiptests')
+          # 使用安全的方式创建PKGBUILD
+          {
+            echo "pkgname=hiwifi-ssh-launcher"
+            echo "pkgver=$VERSION"
+            echo "pkgrel=1"
+            echo "pkgdesc=\"SSH Launcher for HiWiFi\""
+            echo "arch=('x86_64')"
+            echo "license=('MIT')"
+            echo "source=(\"\${pkgname}-\${pkgver}.tar.gz\")"
+            echo "sha256sums=('SKIP')"
+            echo ""
+            echo "build() {"
+            echo "  cd \"\${pkgname}-\${pkgver}\""
+            echo "  go build -ldflags=\"-s -w\" -o \$pkgname ."
+            echo "}"
+            echo ""
+            echo "package() {"
+            echo "  install -Dm755 \"\${srcdir}/\${pkgname}-\${pkgver}/\${pkgname}\" \"\${pkgdir}/usr/bin/\${pkgname}\""
+            echo "}"
+          } > PKGBUILD
 
-          build() {
-            cd "${pkgname}-${pkgver}"
-            go build -ldflags="-s -w" -o $pkgname .
-          }
-
-          package() {
-            install -Dm755 "${srcdir}/${pkgname}-${pkgver}/${pkgname}" "${pkgdir}/usr/bin/${pkgname}"
-          }
-          EOF
-          
-          sed -i "s/VERSION_PLACEHOLDER/$VERSION/g" PKGBUILD
+          # 创建源包（忽略不存在的文件）
           mkdir -p "hiwifi-ssh-launcher-$VERSION"
-          cp -r * "hiwifi-ssh-launcher-$VERSION"/
-          rm "hiwifi-ssh-launcher-$VERSION/hiwifi-ssh-launcher-$VERSION.tar.gz" || true
+          shopt -s extglob
+          cp -r !(hiwifi-ssh-launcher-$VERSION) "hiwifi-ssh-launcher-$VERSION"/ || true
           tar -czf "hiwifi-ssh-launcher-$VERSION.tar.gz" "hiwifi-ssh-launcher-$VERSION"
 
-      # ---------- 4. 使用Arch容器构建 ----------
+      # ---------- 5. 使用Arch容器构建 ----------
       - name: Build with Arch Container
         run: |
           cd clean-build
           
-          # 使用一次性Arch容器构建
-          docker run --rm \
+          # 使用Docker构建（带错误处理）
+          if ! docker run --rm \
             -v $(pwd):/build \
             -w /build \
             archlinux:latest \
@@ -82,13 +98,17 @@ jobs:
               useradd -m builder &&
               chown -R builder:builder /build &&
               su builder -c 'cd /build && makepkg -s --noconfirm SKIPCHECKSUMS SKIPPGPCHECK'
-            "
+            "; then
+            echo "::error::Docker构建失败"
+            exit 1
+          fi
           
-          # 复制生成的包到工作目录
-          cp *.pkg.tar.zst ../
+          # 复制生成的包
+          [ -f *.pkg.tar.zst ] && cp *.pkg.tar.zst ../ || echo "未找到生成的包"
 
-      # ---------- 5. 上传产物 ----------
+      # ---------- 6. 上传产物 ----------
       - name: Upload Artifacts
+        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: release-assets
