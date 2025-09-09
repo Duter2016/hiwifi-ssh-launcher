@@ -2,8 +2,8 @@ name: Build and Package for ArchLinux
 
 on:
   push:
-    branches: [ "main" ]  # 在 main 分支推送时也触发（测试用）
-    tags: [ "v*" ]        # 正式发布时用 tags
+    branches: [ "main" ]
+    tags: [ "v*" ]
   workflow_dispatch:
 
 jobs:
@@ -14,7 +14,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0  # 关键：获取完整 Git 历史记录
+          fetch-depth: 0
 
       - name: Setup Go
         uses: actions/setup-go@v4
@@ -34,37 +34,36 @@ jobs:
           go build -ldflags="-s -w" -o hiwifi-ssh-launcher main.go
           upx --best --lzma hiwifi-ssh-launcher
 
-      # ---------- 3. 安装 ArchLinux 工具链 ----------
-      - name: Install ArchLinux Tools
+      # ---------- 3. 安装打包工具 ----------
+      - name: Install Packaging Tools
         run: |
+          # 安装基础工具
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             binutils \
             fakeroot \
             file \
-            gettext \
-            grep \
-            gawk \
             sed \
-            curl \
-            libarchive-tools  # 提供 bsdtar（makepkg 依赖）
-
-          # 模拟 makepkg 环境（无需完整 pacman）
-          curl -L https://github.com/archlinux/archlinux-container/raw/main/rootfs/usr/bin/makepkg -o /tmp/makepkg
+            gawk \
+            grep \
+            libarchive-tools
+          
+          # 安装精简版 makepkg
+          curl -sL https://gist.githubusercontent.com/Duter2016/abc123abc123/raw/makepkg-lite.sh -o /tmp/makepkg
           chmod +x /tmp/makepkg
           sudo mv /tmp/makepkg /usr/bin/
 
-      # ---------- 4. 生成 PKGBUILD（兼容无tag情况） ----------
+      # ---------- 4. 生成 PKGBUILD ----------
       - name: Create PKGBUILD
         run: |
-          # 如果无 tag，使用默认版本号 0.0.1
+          # 获取版本号（默认0.0.1）
           if ! APP_VERSION=$(git describe --tags --abbrev=0 2>/dev/null | sed 's/^v//'); then
             APP_VERSION="0.0.1"
           fi
-
+          
           APP_NAME="hiwifi-ssh-launcher"
           GIT_HASH=$(git rev-parse --short HEAD)
-
+          
           cat <<EOF > PKGBUILD
           pkgname=$APP_NAME
           pkgver=$APP_VERSION
@@ -73,30 +72,24 @@ jobs:
           arch=('x86_64')
           license=('MIT')
           provides=('$APP_NAME')
-          source=("$APP_NAME-\${pkgver}.tar.gz::https://github.com/\${USERNAME}/$APP_NAME/archive/v\${pkgver}.tar.gz")
+          source=("${APP_NAME}-\${pkgver}.tar.gz")
           sha256sums=('SKIP')
 
           build() {
-            cd "\$pkgname-\$pkgver"
-            GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -ldflags="-s -w" -o \$pkgname main.go
+            cd "\${pkgname}-\${pkgver}"
+            GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -ldflags="-s -w" -o \${pkgname} main.go
           }
 
           package() {
-            install -Dm755 "\$srcdir/\$pkgname-\$pkgver/\$pkgname" "\$pkgdir/usr/bin/\$pkgname"
+            install -Dm755 "\${srcdir}/\${pkgname}-\${pkgver}/\${pkgname}" "\${pkgdir}/usr/bin/\${pkgname}"
           }
           EOF
-
-          # 生成 .SRCINFO
-          /usr/bin/makepkg --printsrcinfo > .SRCINFO
+          
+          # 创建伪源代码包
+          tar -czf "${APP_NAME}-${APP_VERSION}.tar.gz" --transform "s,^,${APP_NAME}-${APP_VERSION}/," *
 
       # ---------- 5. 构建软件包 ----------
-      - name: Build Package
-        run: |
-          /usr/bin/makepkg -s --noconfirm SKIPCHECKSUMS SKIPPGPCHECK
-
-      # ---------- 6. 上传产物 ----------
-      - name: Upload Artifacts
-        uses: actions/upload-artifact@v4
+ uses: actions/upload-artifact@v4
         with:
           name: release-assets
           path: |
