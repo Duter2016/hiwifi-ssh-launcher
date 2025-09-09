@@ -1,16 +1,15 @@
-name: Build and Package for ArchLinux
+name: ArchLinux Package Builder
 
 on:
   push:
     branches: ["main"]
-    tags: ["v*"]
   workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    
     steps:
-      # 1. 初始化
       - name: Checkout code
         uses: actions/checkout@v4
 
@@ -18,59 +17,47 @@ jobs:
         uses: actions/setup-go@v4
         with:
           go-version: '1.21'
+          cache: true
 
-      # 2. 构建二进制
-      - name: Build Binary
+      - name: Build binary
         run: |
           GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -ldflags="-s -w" -o hiwifi-ssh-launcher .
           strip hiwifi-ssh-launcher
 
-      # 3. 准备Arch打包
-      - name: Prepare Arch Package
+      - name: Prepare package files
         run: |
-          mkdir -p arch-build
-          cp hiwifi-ssh-launcher go.mod arch-build/
-          [ -f go.sum ] && cp go.sum arch-build/
-          [ -f LICENSE ] && cp LICENSE arch-build/
+          mkdir pkg
+          cp hiwifi-ssh-launcher pkg/
+          [ -f LICENSE ] && cp LICENSE pkg/
           
           VERSION=${GITHUB_REF#refs/tags/v}
-          [ -z "$VERSION" ] && VERSION="0.0.1"
+          [ -z "$VERSION" ] && VERSION="1.0.0"
 
-          cat > arch-build/PKGBUILD << 'EOL'
+          cat <<EOF > pkg/PKGBUILD
 pkgname=hiwifi-ssh-launcher
-pkgver=VERSION_PLACEHOLDER
+pkgver=$VERSION
 pkgrel=1
-pkgdesc="SSH Launcher"
+pkgdesc="SSH Launcher for HiWiFi"
 arch=('x86_64')
 license=('MIT')
 
-source=("${pkgname}-${pkgver}.tar.gz")
-
 package() {
-  install -Dm755 "$srcdir/${pkgname}-${pkgver}/hiwifi-ssh-launcher" "$pkgdir/usr/bin/$pkgname"
+  install -Dm755 hiwifi-ssh-launcher "\${pkgdir}/usr/bin/hiwifi-ssh-launcher"
 }
-EOL
-          sed -i "s/VERSION_PLACEHOLDER/$VERSION/g" arch-build/PKGBUILD
-          mkdir -p "arch-build/hiwifi-ssh-launcher-$VERSION"
-          cp arch-build/* "arch-build/hiwifi-ssh-launcher-$VERSION"/ 2>/dev/null || true
-          cd arch-build && tar -czf "hiwifi-ssh-launcher-$VERSION.tar.gz" "hiwifi-ssh-launcher-$VERSION"
+EOF
 
-      # 4. 容器内构建
-      - name: Build in Docker
+      - name: Build package
         run: |
-          cd arch-build
+          cd pkg
           docker run --rm -v $(pwd):/build -w /build archlinux:latest bash -c "
             echo 'Server = https://mirrors.ustc.edu.cn/archlinux/\$repo/os/\$arch' > /etc/pacman.d/mirrorlist
             pacman -Sy --noconfirm base-devel &&
-            makepkg -s --noconfirm SKIPCHECKSUMS SKIPPGPCHECK
+            makepkg -s --noconfirm
           "
-          [ -f *.pkg.tar.zst ] && cp *.pkg.tar.zst ../
+          cp *.pkg.tar.zst ..
 
-      # 5. 上传结果
-      - name: Upload Artifacts
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: release-pkg
-          path: |
-            hiwifi-ssh-launcher
-            *.pkg.tar.zst
+          name: hiwifi-package
+          path: "*.pkg.tar.zst"
