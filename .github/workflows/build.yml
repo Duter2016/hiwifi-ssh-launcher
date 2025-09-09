@@ -20,7 +20,6 @@ jobs:
         uses: actions/setup-go@v4
         with:
           go-version: '1.19'
-          cache: true
 
       # 3. 编译二进制文件
       - name: Build binary
@@ -31,27 +30,26 @@ jobs:
       # 4. 准备ArchLinux打包文件
       - name: Prepare Arch package
         run: |
-          # 创建打包目录
           mkdir -p pkg-build
           cp hiwifi-ssh-launcher pkg-build/
           
-          # 自动获取版本号
           VERSION=${GITHUB_REF#refs/tags/v}
           [ -z "$VERSION" ] && VERSION="0.1.0"
           
-          # 生成PKGBUILD文件
-          cat > pkg-build/PKGBUILD <<EOF
+          # 使用单引号EOF避免变量扩展
+          cat <<'EOF' > pkg-build/PKGBUILD
 pkgname=hiwifi-ssh-launcher
-pkgver=$VERSION
+pkgver=VERSION_PLACEHOLDER
 pkgrel=1
 pkgdesc="SSH Launcher for HiWiFi routers"
 arch=('x86_64')
 license=('MIT')
 
 package() {
-  install -Dm755 "\$srcdir/hiwifi-ssh-launcher" "\$pkgdir/usr/bin/hiwifi-ssh-launcher"
+  install -Dm755 "$srcdir/hiwifi-ssh-launcher" "$pkgdir/usr/bin/hiwifi-ssh-launcher"
 }
 EOF
+          sed -i "s/VERSION_PLACEHOLDER/$VERSION/g" pkg-build/PKGBUILD
 
       # 5. 使用Docker容器构建Arch包
       - name: Build Arch package
@@ -62,7 +60,7 @@ EOF
             pacman -Sy --noconfirm base-devel &&
             makepkg -s --noconfirm
           "
-          cp *.pkg.tar.zst ..
+          [ -f *.pkg.tar.zst ] && cp *.pkg.tar.zst ../ || exit 1
 
       # 6. 上传制品
       - name: Upload artifact
