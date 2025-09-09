@@ -2,7 +2,8 @@ name: Build and Package for ArchLinux
 
 on:
   push:
-    tags: ["v*"]
+    branches: [ "main" ]  # 在 main 分支推送时也触发（测试用）
+    tags: [ "v*" ]        # 正式发布时用 tags
   workflow_dispatch:
 
 jobs:
@@ -12,6 +13,8 @@ jobs:
       # ---------- 1. 初始化 ----------
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # 关键：获取完整 Git 历史记录
 
       - name: Setup Go
         uses: actions/setup-go@v4
@@ -19,39 +22,58 @@ jobs:
           go-version: '1.21'
 
       - name: Generate go.sum
-        run: go mod tidy  # 显式生成 go.sum
+        run: go mod tidy
 
       # ---------- 2. 构建二进制 ----------
-      - name: Build for ArchLinux
+      - name: Build Binary
         env:
           GOOS: linux
           GOARCH: amd64
           CGO_ENABLED: 0
         run: |
           go build -ldflags="-s -w" -o hiwifi-ssh-launcher main.go
-          upx --best --lzma hiwifi-ssh-launcher  # 可选压缩
+          upx --best --lzma hiwifi-ssh-launcher
 
-      # ---------- 3. 安装 ArchLinux 打包工具 ----------
-      - name: Install makepkg dependencies
+      # ---------- 3. 安装 ArchLinux 工具链 ----------
+      - name: Install ArchLinux Tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y binutils fakeroot pacman  # 关键：安装 pacman
+          sudo apt-get install -y --no-install-recommends \
+            binutils \
+            fakeroot \
+            file \
+            gettext \
+            grep \
+            gawk \
+            sed \
+            curl \
+            libarchive-tools  # 提供 bsdtar（makepkg 依赖）
 
-      # ---------- 4. 生成 PKGBUILD ----------
+          # 模拟 makepkg 环境（无需完整 pacman）
+          curl -L https://github.com/archlinux/archlinux-container/raw/main/rootfs/usr/bin/makepkg -o /tmp/makepkg
+          chmod +x /tmp/makepkg
+          sudo mv /tmp/makepkg /usr/bin/
+
+      # ---------- 4. 生成 PKGBUILD（兼容无tag情况） ----------
       - name: Create PKGBUILD
         run: |
-          APP_VERSION=$(git describe --tags --abbrev=0 | sed 's/^v//')
+          # 如果无 tag，使用默认版本号 0.0.1
+          if ! APP_VERSION=$(git describe --tags --abbrev=0 2>/dev/null | sed 's/^v//'); then
+            APP_VERSION="0.0.1"
+          fi
+
           APP_NAME="hiwifi-ssh-launcher"
+          GIT_HASH=$(git rev-parse --short HEAD)
 
           cat <<EOF > PKGBUILD
           pkgname=$APP_NAME
           pkgver=$APP_VERSION
           pkgrel=1
-          pkgdesc="SSH Launcher for HiWiFi"
+          pkgdesc="SSH Launcher for HiWiFi (Git commit: $GIT_HASH)"
           arch=('x86_64')
           license=('MIT')
           provides=('$APP_NAME')
-          source=("\$pkgname-\$pkgver.tar.gz::\$url/archive/v\$pkgver.tar.gz")
+          source=("$APP_NAME-\${pkgver}.tar.gz::https://github.com/\${USERNAME}/$APP_NAME/archive/v\${pkgver}.tar.gz")
           sha256sums=('SKIP')
 
           build() {
@@ -64,22 +86,21 @@ jobs:
           }
           EOF
 
-          makepkg --printsrcinfo > .SRCINFO
+          # 生成 .SRCINFO
+          /usr/bin/makepkg --printsrcinfo > .SRCINFO
 
       # ---------- 5. 构建软件包 ----------
-      - name: Build Arch Package
+      - name: Build Package
         run: |
-          makepkg -s --noconfirm SKIPCHECKSUMS SKIPPGPCHECK
+          /usr/bin/makepkg -s --noconfirm SKIPCHECKSUMS SKIPPGPCHECK
 
       # ---------- 6. 上传产物 ----------
-      - name: Upload Binary
+      - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: hiwifi-ssh-launcher
-          path: hiwifi-ssh-launcher
-
-      - name: Upload Arch Package
-        uses: actions/upload-artifact@v4
-        with:
-          name: hiwifi-ssh-launcher-pkg
-          path: '*.pkg.tar.zst'
+          name: release-assets
+          path: |
+            hiwifi-ssh-launcher
+            *.pkg.tar.zst
+            PKGBUILD
+            .SRCINFO
