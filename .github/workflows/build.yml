@@ -2,14 +2,14 @@ name: Build and Package for ArchLinux
 
 on:
   push:
-    tags: ["v*"]  # 触发条件：打 tag 时自动运行（如 v1.0.0）
-  workflow_dispatch:  # 允许手动触发
+    tags: ["v*"]
+  workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      # ---------- 1. 初始化环境 ----------
+      # ---------- 1. 初始化 ----------
       - name: Checkout code
         uses: actions/checkout@v4
 
@@ -18,28 +18,36 @@ jobs:
         with:
           go-version: '1.21'
 
-      # ---------- 2. 编译二进制 ----------
+      - name: Generate go.sum
+        run: go mod tidy  # 显式生成 go.sum
+
+      # ---------- 2. 构建二进制 ----------
       - name: Build for ArchLinux
         env:
           GOOS: linux
           GOARCH: amd64
-          CGO_ENABLED: 0  # 静态编译
+          CGO_ENABLED: 0
         run: |
-          go build -ldflags="-s -w" -o myapp main.go
-          upx --best --lzma myapp  # 可选：压缩二进制
+          go build -ldflags="-s -w" -o hiwifi-ssh-launcher main.go
+          upx --best --lzma hiwifi-ssh-launcher  # 可选压缩
 
-      # ---------- 3. 生成 PKGBUILD ----------
+      # ---------- 3. 安装 ArchLinux 打包工具 ----------
+      - name: Install makepkg dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y binutils fakeroot pacman  # 关键：安装 pacman
+
+      # ---------- 4. 生成 PKGBUILD ----------
       - name: Create PKGBUILD
         run: |
-          # 动态获取版本号（从 git tag）
           APP_VERSION=$(git describe --tags --abbrev=0 | sed 's/^v//')
-          APP_NAME="myapp"
+          APP_NAME="hiwifi-ssh-launcher"
 
           cat <<EOF > PKGBUILD
           pkgname=$APP_NAME
           pkgver=$APP_VERSION
           pkgrel=1
-          pkgdesc="Your Go Application"
+          pkgdesc="SSH Launcher for HiWiFi"
           arch=('x86_64')
           license=('MIT')
           provides=('$APP_NAME')
@@ -53,42 +61,25 @@ jobs:
 
           package() {
             install -Dm755 "\$srcdir/\$pkgname-\$pkgver/\$pkgname" "\$pkgdir/usr/bin/\$pkgname"
-            # 可选：安装 Systemd 服务文件（如有需要）
-            # install -Dm644 "\$srcdir/\$pkgname-\$pkgver/\$pkgname.service" "\$pkgdir/usr/lib/systemd/system/\$pkgname.service"
           }
           EOF
 
-          # 生成 .SRCINFO（ArchLinux 软件包元数据）
           makepkg --printsrcinfo > .SRCINFO
 
-      # ---------- 4. 构建 ArchLinux 软件包 ----------
+      # ---------- 5. 构建软件包 ----------
       - name: Build Arch Package
         run: |
-          # 安装 makepkg 依赖（在 Ubuntu 容器中模拟 Arch 环境）
-          sudo apt-get update
-          sudo apt-get install -y binutils fakeroot
-
-          # 构建软件包（生成 .pkg.tar.zst 文件）
           makepkg -s --noconfirm SKIPCHECKSUMS SKIPPGPCHECK
 
-      # ---------- 5. 上传产物 ----------
+      # ---------- 6. 上传产物 ----------
       - name: Upload Binary
         uses: actions/upload-artifact@v4
         with:
-          name: myapp-binary
-          path: myapp
+          name: hiwifi-ssh-launcher
+          path: hiwifi-ssh-launcher
 
       - name: Upload Arch Package
         uses: actions/upload-artifact@v4
         with:
-          name: myapp-arch-pkg
+          name: hiwifi-ssh-launcher-pkg
           path: '*.pkg.tar.zst'
-
-      # 可选：发布到 GitHub Releases
-      - name: Upload to Release
-        if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v1
-        with:
-          files: |
-            myapp
-            *.pkg.tar.zst
