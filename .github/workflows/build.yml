@@ -28,60 +28,64 @@ jobs:
           GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -ldflags="-s -w" -o hiwifi-ssh-launcher .
           strip hiwifi-ssh-launcher
 
-      # ---------- 3. 准备打包环境 ----------
-      - name: Prepare Arch Container
+      # ---------- 3. 准备纯净构建环境 ----------
+      - name: Prepare Clean Build Directory
         run: |
-          # 拉取最新archlinux容器
-          docker pull archlinux:latest
+          # 创建干净的构建目录
+          mkdir -p clean-build
+          cp -r main.go go.mod go.sum LICENSE README.md hiwifi-ssh-launcher clean-build/
+          cd clean-build
           
-          # 创建专属构建用户
-          docker run --name arch-builder -itd archlinux:latest bash
-          docker exec arch-builder bash -c "
-            pacman -Sy --noconfirm base-devel &&
-            useradd -m builder &&
-            echo 'builder ALL=(ALL) NOPASSWD: ALL' >> /etc/sudoers
-          "
-          
-          # 复制文件到容器
-          docker cp . arch-builder:/home/builder/build
-
-      # ---------- 4. 构建Arch软件包 ----------
-      - name: Build Package
-        run: |
           # 准备版本号
           VERSION=${GITHUB_REF#refs/tags/v}
           [ -z "$VERSION" ] || [ "$VERSION" = "$GITHUB_REF" ] && VERSION="0.0.1"
           
-          # 在容器中以非root用户执行构建
-          docker exec -w /home/builder/build -u builder arch-builder bash -c "
-            chmod -R 777 . &&
-            echo 'PKGBUILD内容:'
-            cat <<EOF > PKGBUILD
-            pkgname=hiwifi-ssh-launcher
-            pkgver=$VERSION
-            pkgrel=1
-            pkgdesc='SSH Launcher for HiWiFi'
-            arch=('x86_64')
-            license=('MIT')
-            source=(\"\${pkgname}-\${pkgver}.tar.gz\")
-            sha256sums=('SKIP')
+          # 创建PKGBUILD和源包
+          cat << 'EOF' > PKGBUILD
+          pkgname=hiwifi-ssh-launcher
+          pkgver=VERSION_PLACEHOLDER
+          pkgrel=1
+          pkgdesc="SSH Launcher for HiWiFi"
+          arch=('x86_64')
+          license=('MIT')
+          source=("${pkgname}-${pkgver}.tar.gz")
+          sha256sums=('SKiptests')
 
-            build() {
-              cd \"\${pkgname}-\${pkgver}\"
-              go build -ldflags=\"-s -w\" -o \$pkgname .
-            }
+          build() {
+            cd "${pkgname}-${pkgver}"
+            go build -ldflags="-s -w" -o $pkgname .
+          }
 
-            package() {
-              install -Dm755 \"\${srcdir}/\${pkgname}-\${pkgver}/\${pkgname}\" \"\${pkgdir}/usr/bin/\${pkgname}\"
-            }
-            EOF
-            tar -czf \"hiwifi-ssh-launcher-$VERSION.tar.gz\" --transform \"s,^,hiwifi-ssh-launcher-$VERSION/,\" *
-            makepkg -s --noconfirm SKIPCHECKSUMS SKIPPGPCHECK &&
-            chmod 644 *.pkg.tar.zst
-          "
+          package() {
+            install -Dm755 "${srcdir}/${pkgname}-${pkgver}/${pkgname}" "${pkgdir}/usr/bin/${pkgname}"
+          }
+          EOF
           
-          # 从容器复制生成的包
-          docker cp arch-builder:/home/builder/build/ .
+          sed -i "s/VERSION_PLACEHOLDER/$VERSION/g" PKGBUILD
+          mkdir -p "hiwifi-ssh-launcher-$VERSION"
+          cp -r * "hiwifi-ssh-launcher-$VERSION"/
+          rm "hiwifi-ssh-launcher-$VERSION/hiwifi-ssh-launcher-$VERSION.tar.gz" || true
+          tar -czf "hiwifi-ssh-launcher-$VERSION.tar.gz" "hiwifi-ssh-launcher-$VERSION"
+
+      # ---------- 4. 使用Arch容器构建 ----------
+      - name: Build with Arch Container
+        run: |
+          cd clean-build
+          
+          # 使用一次性Arch容器构建
+          docker run --rm \
+            -v $(pwd):/build \
+            -w /build \
+            archlinux:latest \
+            bash -c "
+              pacman -Sy --noconfirm base-devel &&
+              useradd -m builder &&
+              chown -R builder:builder /build &&
+              su builder -c 'cd /build && makepkg -s --noconfirm SKIPCHECKSUMS SKIPPGPCHECK'
+            "
+          
+          # 复制生成的包到工作目录
+          cp *.pkg.tar.zst ../
 
       # ---------- 5. 上传产物 ----------
       - name: Upload Artifacts
