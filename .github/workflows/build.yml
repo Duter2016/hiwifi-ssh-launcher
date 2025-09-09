@@ -13,83 +13,81 @@ jobs:
       # ---------- 1. 初始化 ----------
       - name: Checkout code
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Setup Go
+        
+      - name: Set up Go
         uses: actions/setup-go@v4
         with:
           go-version: '1.21'
+          cache: true  # 启用缓存
+          cache-dependency-path: go.sum  # 指定缓存依赖文件
 
-      - name: Generate go.sum
-        run: go mod tidy
-
-      # ---------- 2. 构建二进制 ----------
+      # ---------- 2. 生成依赖文件 ----------
+      - name: Initialize Go Modules
+        run: |
+          if [ ! -f go.mod ]; then
+            go mod init github.com/Duter2016/hiwifi-ssh-launcher
+          fi
+          go mod tidy
+          
+      # ---------- 3. 构建二进制 ----------
       - name: Build Binary
         env:
           GOOS: linux
           GOARCH: amd64
           CGO_ENABLED: 0
         run: |
-          go build -ldflags="-s -w" -o hiwifi-ssh-launcher main.go
-          upx --best --lzma hiwifi-ssh-launcher
+          go build -ldflags="-s -w" -o hiwifi-ssh-launcher .
+          strip hiwifi-ssh-launcher
 
-      # ---------- 3. 安装打包工具 ----------
+      # ---------- 4. 安装打包工具 ----------
       - name: Install Packaging Tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
+          sudo apt-get install -y \
             binutils \
             fakeroot \
             file \
-            sed \
-            gawk \
-            grep \
-            libarchive-tools
+            libarchive-tools \
+            curl
           
-          curl -sL https://gist.githubusercontent.com/Duter2016/abc123abc123/raw/makepkg-lite.sh -o /tmp/makepkg
-          chmod +x /tmp/makepkg
-          sudo mv /tmp/makepkg /usr/bin/
+          # 安装精简版makepkg
+          sudo curl -L https://raw.githubusercontent.com/archlinux/archlinux-container/main/rootfs/usr/bin/makepkg -o /usr/bin/makepkg
+          sudo chmod +x /usr/bin/makepkg
 
-      # ---------- 4. 生成 PKGBUILD ----------
-      - name: Create PKGBUILD
+      # ---------- 5. 创建PKGBUILD ----------
+      - name: Create Package Files
         run: |
-          if ! APP_VERSION=$(git describe --tags --abbrev=0 2>/dev/null | sed 's/^v//'); then
-            APP_VERSION="0.0.1"
-          fi
-          
-          APP_NAME="hiwifi-ssh-launcher"
-          GIT_HASH=$(git rev-parse --short HEAD)
+          VERSION=${GITHUB_REF##*/v}
+          [ -z "$VERSION" ] || [ "$VERSION" = "$GITHUB_REF" ] && VERSION="0.0.1"
           
           cat <<EOF > PKGBUILD
-          pkgname=$APP_NAME
-          pkgver=$APP_VERSION
+          pkgname=hiwifi-ssh-launcher
+          pkgver=$VERSION
           pkgrel=1
-          pkgdesc="SSH Launcher for HiWiFi (Git commit: $GIT_HASH)"
+          pkgdesc="SSH Launcher for HiWiFi"
           arch=('x86_64')
           license=('MIT')
-          provides=('$APP_NAME')
-          source=("\${pkgname}-\${pkgver}.tar.gz")
+          source=("\$pkgname-\$pkgver.tar.gz")
           sha256sums=('SKIP')
 
           build() {
-            cd "\${pkgname}-\${pkgver}"
-            GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -ldflags="-s -w" -o \${pkgname} main.go
+            cd "\$pkgname-\$pkgver"
+            go build -ldflags="-s -w" -o \$pkgname .
           }
 
           package() {
-            install -Dm755 "\${srcdir}/\${pkgname}-\${pkgver}/\${pkgname}" "\${pkgdir}/usr/bin/\${pkgname}"
+            install -Dm755 "\$srcdir/\$pkgname-\$pkgver/\$pkgname" "\$pkgdir/usr/bin/\$pkgname"
           }
           EOF
-          
-          tar -czf "${APP_NAME}-${APP_VERSION}.tar.gz" --transform "s,^,${APP_NAME}-${APP_VERSION}/," *
 
-      # ---------- 5. 构建软件包 ----------
+          tar -czf "hiwifi-ssh-launcher-$VERSION.tar.gz" --transform "s,^,hiwifi-ssh-launcher-$VERSION/," *
+
+      # ---------- 6. 构建软件包 ----------
       - name: Build Package
         run: |
-          /usr/bin/makepkg -s --noconfirm SKIPCHECKSUMS SKIPPGPCHECK
+          makepkg -s --noconfirm SKIPCHECKSUMS SKIPPGPCHECK
 
-      # ---------- 6. 上传产物 ----------
+      # ---------- 7. 上传产物 ----------
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -97,5 +95,3 @@ jobs:
           path: |
             hiwifi-ssh-launcher
             *.pkg.tar.zst
-            PKGBUILD
-            .SRCINFO
