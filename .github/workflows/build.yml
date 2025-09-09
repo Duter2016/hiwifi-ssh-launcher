@@ -2,123 +2,75 @@ name: Build and Package for ArchLinux
 
 on:
   push:
-    branches: [ "main" ]
-    tags: [ "v*" ]
+    branches: ["main"]
+    tags: ["v*"]
   workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      # ---------- 1. 初始化 ----------
+      # 1. 初始化
       - name: Checkout code
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
       - name: Setup Go
         uses: actions/setup-go@v4
         with:
           go-version: '1.21'
-          cache: true
 
-      # ---------- 2. 准备Go模块 ----------
-      - name: Initialize Go Modules
-        run: |
-          if [ ! -f go.mod ]; then
-            go mod init github.com/Duter2016/hiwifi-ssh-launcher
-          fi
-          go mod tidy
-
-      # ---------- 3. 构建二进制 ----------
+      # 2. 构建二进制
       - name: Build Binary
         run: |
           GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -ldflags="-s -w" -o hiwifi-ssh-launcher .
           strip hiwifi-ssh-launcher
 
-      # ---------- 4. 准备纯净构建环境 ----------
-      - name: Prepare Minimal Build Files
+      # 3. 准备Arch打包
+      - name: Prepare Arch Package
         run: |
-          # 创建最小化构建目录
           mkdir -p arch-build
+          cp hiwifi-ssh-launcher go.mod arch-build/
+          [ -f go.sum ] && cp go.sum arch-build/
+          [ -f LICENSE ] && cp LICENSE arch-build/
           
-          # 必需文件处理（带错误处理）
-          cp main.go arch-build/ || echo "警告：main.go不存在"
-          cp go.mod arch-build/
-          [ -f go.sum ] && cp go.sum arch-build/ || echo "警告：go.sum不存在"
-          [ -f LICENSE ] && cp LICENSE arch-build/ || echo "警告：LICENSE不存在"
-          [ -f README.md ] && cp README.md arch-build/ || echo "警告：README.md不存在"
-          cp hiwifi-ssh-launcher arch-build/
-          
-          # 创建版本信息
           VERSION=${GITHUB_REF#refs/tags/v}
           [ -z "$VERSION" ] && VERSION="0.0.1"
 
-          # 安全创建PKGBUILD
           cat > arch-build/PKGBUILD << 'EOL'
 pkgname=hiwifi-ssh-launcher
 pkgver=VERSION_PLACEHOLDER
 pkgrel=1
-pkgdesc="SSH Launcher for HiWiFi"
+pkgdesc="SSH Launcher"
 arch=('x86_64')
 license=('MIT')
-options=('!strip')  # 避免重复strip
 
 source=("${pkgname}-${pkgver}.tar.gz")
-
-prepare() {
-  echo "使用预编译的二进制文件"
-}
 
 package() {
   install -Dm755 "$srcdir/${pkgname}-${pkgver}/hiwifi-ssh-launcher" "$pkgdir/usr/bin/$pkgname"
 }
 EOL
-          
           sed -i "s/VERSION_PLACEHOLDER/$VERSION/g" arch-build/PKGBUILD
-          
-          # 创建源包（排除不必要的文件）
           mkdir -p "arch-build/hiwifi-ssh-launcher-$VERSION"
-          cp arch-build/* "arch-build/hiwifi-ssh-launcher-$VERSION"/
-          rm "arch-build/hiwifi-ssh-launcher-$VERSION/hiwifi-ssh-launcher-$VERSION.tar.gz" 2>/dev/null || true
-          
+          cp arch-build/* "arch-build/hiwifi-ssh-launcher-$VERSION"/ 2>/dev/null || true
           cd arch-build && tar -czf "hiwifi-ssh-launcher-$VERSION.tar.gz" "hiwifi-ssh-launcher-$VERSION"
 
-      # ---------- 5. 使用容器构建 ----------
-      - name: Build Package in Container
+      # 4. 容器内构建
+      - name: Build in Docker
         run: |
           cd arch-build
-          
-          # 使用Arch容器构建（优化版）
-          docker run --rm \
-            -v $(pwd):/build \
-            -w /build \
-            -e PKGEXT='.pkg.tar.zst' \
-            archlinux:latest \
-            bash -c "
-              # 设置镜像源加速
-              echo 'Server = https://mirrors.ustc.edu.cn/archlinux/\$repo/os/\$arch' > /etc/pacman.d/mirrorlist
-              
-              # 最小化安装
-              pacman -Sy --noconfirm pacman-contrib && \
-              pacman -Scc --noconfirm && \
-              pacman -S --needed --noconfirm base-devel && \
-              
-              # 构建软件包
-              makepkg -s --noconfirm SKIPCHECKSUMS SKIPPGPCHECK && \
-              chmod 644 *.pkg.tar.*
-            "
-          
-          # 复制生成的包
-          ls -lh *.pkg.tar.*
-          [ -f *.pkg.tar.* ] && cp *.pkg.tar.* ../ || (echo "构建失败：未生成软件包" && exit 1)
+          docker run --rm -v $(pwd):/build -w /build archlinux:latest bash -c "
+            echo 'Server = https://mirrors.ustc.edu.cn/archlinux/\$repo/os/\$arch' > /etc/pacman.d/mirrorlist
+            pacman -Sy --noconfirm base-devel &&
+            makepkg -s --noconfirm SKIPCHECKSUMS SKIPPGPCHECK
+          "
+          [ -f *.pkg.tar.zst ] && cp *.pkg.tar.zst ../
 
-      # ---------- 6. 上传产物 ----------
+      # 5. 上传结果
       - name: Upload Artifacts
-        if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: release-assets
+          name: release-pkg
           path: |
             hiwifi-ssh-launcher
             *.pkg.tar.zst
