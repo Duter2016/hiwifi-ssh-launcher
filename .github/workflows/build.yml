@@ -37,7 +37,6 @@ jobs:
       # ---------- 3. 安装打包工具 ----------
       - name: Install Packaging Tools
         run: |
-          # 安装基础工具
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             binutils \
@@ -48,7 +47,6 @@ jobs:
             grep \
             libarchive-tools
           
-          # 安装精简版 makepkg
           curl -sL https://gist.githubusercontent.com/Duter2016/abc123abc123/raw/makepkg-lite.sh -o /tmp/makepkg
           chmod +x /tmp/makepkg
           sudo mv /tmp/makepkg /usr/bin/
@@ -56,7 +54,6 @@ jobs:
       # ---------- 4. 生成 PKGBUILD ----------
       - name: Create PKGBUILD
         run: |
-          # 获取版本号（默认0.0.1）
           if ! APP_VERSION=$(git describe --tags --abbrev=0 2>/dev/null | sed 's/^v//'); then
             APP_VERSION="0.0.1"
           fi
@@ -72,7 +69,7 @@ jobs:
           arch=('x86_64')
           license=('MIT')
           provides=('$APP_NAME')
-          source=("${APP_NAME}-\${pkgver}.tar.gz")
+          source=("\${pkgname}-\${pkgver}.tar.gz")
           sha256sums=('SKIP')
 
           build() {
@@ -85,11 +82,16 @@ jobs:
           }
           EOF
           
-          # 创建伪源代码包
           tar -czf "${APP_NAME}-${APP_VERSION}.tar.gz" --transform "s,^,${APP_NAME}-${APP_VERSION}/," *
 
       # ---------- 5. 构建软件包 ----------
- uses: actions/upload-artifact@v4
+      - name: Build Package
+        run: |
+          /usr/bin/makepkg -s --noconfirm SKIPCHECKSUMS SKIPPGPCHECK
+
+      # ---------- 6. 上传产物 ----------
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
         with:
           name: release-assets
           path: |
