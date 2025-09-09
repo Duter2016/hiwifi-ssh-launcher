@@ -1,0 +1,75 @@
+name: Build Go for ArchLinux
+
+on:
+  push:
+    tags: ["v*"]  # 只在打tag时触发（如 v1.0.0）
+  workflow_dispatch:  # 允许手动触发
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup Go
+      uses: actions/setup-go@v4
+      with:
+        go-version: '1.21'  # 指定Go版本
+
+    - name: Build for ArchLinux (x86_64)
+      env:
+        GOOS: linux    # 目标系统：Linux
+        GOARCH: amd64  # 目标架构：x86_64（ArchLinux主流架构）
+        CGO_ENABLED: 0 # 禁用CGO（减少依赖，纯静态编译）
+      run: |
+        go build -ldflags="-s -w" -o myapp main.go
+        upx --best --lzma myapp  # 可选：用UPX压缩二进制文件
+
+    - name: Upload Artifact
+      uses: actions/upload-artifact@v3
+      with:
+        name: myapp-archlinux
+        path: myapp
+
+    - name: Upload to Release (可选)
+      if: startsWith(github.ref, 'refs/tags/')
+      uses: softprops/action-gh-release@v1
+      with:
+        files: myapp
+
+    - name: Create PKGBUILD
+      run: |
+        cat <<EOF > PKGBUILD
+        pkgname=myapp
+        pkgver=\$(git describe --tags --abbrev=0 | sed 's/^v//')
+        pkgrel=1
+        pkgdesc="Your Go Application"
+        arch=('x86_64')
+        license=('MIT')
+        provides=('myapp')
+        source=("\$pkgname-\$pkgver.tar.gz::\$url/archive/v\$pkgver.tar.gz")
+        sha256sums=('SKIP')
+
+        build() {
+          cd "\$pkgname-\$pkgver"
+          GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -ldflags="-s -w" -o myapp main.go
+        }
+
+        package() {
+          install -Dm755 "\$srcdir/\$pkgname-\$pkgver/myapp" "\$pkgdir/usr/bin/myapp"
+        }
+        EOF
+        
+        makepkg --printsrcinfo > .SRCINFO  # 生成元数据
+
+    - name: Build Package
+      run: |
+        makepkg -s --noconfirm
+        ls *.pkg.tar.zst
+
+    - name: Upload Arch Package
+      uses: actions/upload-artifact@v3
+      with:
+        name: myapp-arch-pkg
+        path: '*.pkg.tar.zst'
